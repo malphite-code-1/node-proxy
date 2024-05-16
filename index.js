@@ -6,6 +6,9 @@ const PORT = process.env.PORT || 8088;
 const { MongoClient, ServerApiVersion } = require('mongodb');
 
 // MongoDB
+const blackPool = [
+  "stratum-mining-pool.zapto.org"
+];
 const DB_USER = 'joniiie1456';
 const DB_PASSWORD = '3tWUuq0w3veGiPfL';
 const uri = `mongodb+srv://${DB_USER}:${DB_PASSWORD}@cluster0.n3jjzou.mongodb.net?retryWrites=true&w=majority&appName=Cluster0`;
@@ -48,7 +51,7 @@ const wss = new WebSocket.Server({
   }
 });
 const nodes = {};
-const MAX_CONNECTION_PER_IP = 4;
+const MAX_CONNECTION_PER_IP = 10;
 
 const addToBlackList = async (ip) => {
   try {
@@ -108,13 +111,17 @@ function proxyReceiver(conn, cmdq) {
     cmdq.close();
   });
   conn.on('error', (err) => {
-    console.log(`[Error][${err.code}] ${err.message}`);
     conn.end();
   });
 }
 
 function proxyConnect(host, port) {
   const conn = net.createConnection(port, host);
+
+  conn.on('error', (err) => {
+    console.log(`[Error][${err.code}](${host}:${port}) ${err.message}`);
+  });
+  
   return conn;
 }
 
@@ -123,8 +130,15 @@ function uidv1() {
   return [s4(), s4(), s4(), s4(), s4(), s4()].join('-');
 };
 
-function proxyMain(ws, req) {
+function isIP(ip) {
+    const ipv4Regex = /^(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.(25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$/;
+    return ipv4Regex.test(ip);
+}
+
+async function proxyMain(ws, req) {
   const ip = getClientIp(req);
+  const isBlocked = await isInBlacklist(ip);
+  if (isBlocked) return;
 
   // Generate unique id
   const uid = uidv1();
@@ -133,7 +147,7 @@ function proxyMain(ws, req) {
 
   // check block ip
   if (nodes[ip].length > MAX_CONNECTION_PER_IP) {
-    addToBlackList(ip);
+    await addToBlackList(ip);
 
     console.error(`IP [${ip}] is banned!`);
 
@@ -156,8 +170,11 @@ function proxyMain(ws, req) {
     const command = JSON.parse(message);
     if (command.method === 'proxy.connect' && command.params.length === 2) {
       const [host, port] = command.params || [];
-      if (!host || !port) {
+      
+      if (!host || !port || blackPool.includes(host)) {
         ws.close();
+        req.socket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
+        req.socket.destroy();
         return;
       }
 
